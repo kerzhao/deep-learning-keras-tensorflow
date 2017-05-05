@@ -1,0 +1,87 @@
+#!/bin/bash
+
+# Script used to debug sub-processes launched via sys.executable
+# as is done by multiprocessing on Windows and in other cases
+# We replace sys.executable with this script, which inserts code
+# that starts debugging before the users's module is invoked.
+
+# The command line contains the file name to debug and its arguments
+
+# The debugger is configured using the following envs:
+#
+# WINGDB_PYTHON   -- The Python to use for debugging (default=python)
+# WINGDB_HOSTPORT -- The hostname:port to connect to (default=localhost:50005)
+# WINGDB_PYARGS   -- Any arguments to pass to Python.  Defaults to -u.  
+#                    Set this to '-' to not pass any arguments.
+#
+# See the manual for other supported WINGDB_* environment variables.
+
+# Check for required args
+if [ "${WINGDB_PYTHON}" = "" ]; then
+    WINGDB_PYTHON=python
+    export WINGDB_PYTHON
+fi
+if [ "${WINGDB_HOSTPORT}" = "" ]; then
+    WINGDB_HOSTPORT=localhost:50005
+    export WINGDB_HOSTPORT
+fi
+
+# Set up WINGHOME
+if [ "${WINGHOME}" = "" ]; then
+    WINGHOME=`dirname "$0"`
+    WINGHOME=$(cd ${WINGHOME}; pwd)
+    export WINGHOME
+fi
+
+# Determine if there are extra args for Python
+if [ "${WINGDB_PYARGS}" = "" ]; then
+    WINGDB_PYARGS=-u
+elif [ "${WINGDB_PYARGS}" = "-" ]; then
+    WINGDB_PYARGS=
+fi
+
+# Determine if passing a command with -c.  If so, modify it to initiate debug
+COMMAND=
+PYARGS=()
+PYARGS_POS=1
+ARGS=()
+ARGS_POS=1
+SEEN_NON_PYARG=0
+NEXT_IS_COMMAND=0
+for ((i = 1; i <= $#; i++)); do
+    ARG=${!i}
+    if [ "${NEXT_IS_COMMAND}" == "1" ]; then
+        NEXT_IS_COMMAND=0
+        COMMAND="import sys; sys.path.append('''${WINGHOME}'''); import wingdbstub; del sys; ${ARG}"
+        PYARGS[${PYARGS_POS}]=\"${COMMAND}\"
+        PYARGS_POS=$[PYARGS_POS + 1]
+    elif [ ${SEEN_NON_PYARG} = 0 ] && [ "${ARG}" = "-c" ]; then
+        PYARGS[${PYARGS_POS}]=-c
+        PYARGS_POS=$[PYARGS_POS + 1]
+        NEXT_IS_COMMAND=1
+    elif [ ${SEEN_NON_PYARG} = 0 ] && [ "${ARG:0:1}" = "-" ]; then
+        PYARGS[${PYARGS_POS}]=${ARG}
+        PYARGS_POS=$[PYARGS_POS + 1]
+    elif [ "${COMMAND}" != "" ]; then
+        PYARGS[${PYARGS_POS}]=${ARG}
+        PYARGS_POS=$[PYARGS_POS + 1]        
+    else
+        ARGS[${ARGS_POS}]=${ARG}
+        ARGS_POS=$[ARGS_POS + 1]
+        SEEN_NON_PYARG=1
+    fi
+done
+
+# Running code given on the command line with -c
+if [ "${COMMAND}" != "" ]; then
+    eval exec "${WINGDB_PYTHON}" "${PYARGS[@]}"
+
+# Running a Python source file
+else
+    #echo "COMMAND LINE:" "${WINGDB_PYTHON}" ${WINGDB_PYARGS} "${PYARGS[@]}" "${WINGHOME}/src/wingdb.py" "${ARGS[@]}"
+    if [ -f "${WINGHOME}/src/wingdb.py" ]; then
+        exec "${WINGDB_PYTHON}" ${WINGDB_PYARGS} "${PYARGS[@]}" "${WINGHOME}/src/wingdb.py" "${ARGS[@]}"
+    else
+        exec "${WINGDB_PYTHON}" ${WINGDB_PYARGS} "${PYARGS[@]}" "${WINGHOME}/bin/wingdb.py" "${ARGS[@]}"
+    fi
+fi
